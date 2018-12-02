@@ -6,26 +6,29 @@ import GPy
 import matplotlib.pyplot as plt
 import numpy as np
 
-from safemdp.grid_world import (compute_true_safe_set, compute_S_hat0,
-                                compute_true_S_hat, draw_gp_sample, GridWorld)
+from multiagent_grid_world import (compute_true_safe_set, compute_S_hat0,
+                                compute_true_S_hat, draw_gp_sample, MultiagentGridWorldAgent)
 
 # Define world
-world_shape = (20, 20)
+world_shape = (5, 5)
 step_size = (0.5, 0.5)
 
-# Define GP
+num_agent = 8
+agent_explore_kernels = []
+agent_explore_liks = []
+agent_exploit_kernels = []
+agent_exploit_liks = []
 noise = 0.001
-kernel = GPy.kern.RBF(input_dim=2, lengthscale=(2., 2.), variance=1.,
-                      ARD=True)
-lik = GPy.likelihoods.Gaussian(variance=noise ** 2)
-lik.constrain_bounded(1e-6, 10000.)
 
-# Sample and plot world
-altitudes, coord = draw_gp_sample(kernel, world_shape, step_size)
-fig = plt.figure()
-ax = fig.add_subplot(111, projection='3d')
-ax.plot_trisurf(coord[:, 0], coord[:, 1], altitudes)
-plt.show()
+for agent in range(num_agent):
+    agent_explore_kernels += [GPy.kern.RBF(input_dim=4, lengthscale=(2., 2., 2., 2.), ARD=True)]
+    agent_explore_liks += [GPy.likelihoods.Gaussian(variance=noise ** 2)]
+    agent_explore_liks[agent].constrain_bounded(1e-6, 1)
+
+for agent in range(num_agent):
+    agent_exploit_kernels += [GPy.kern.RBF(input_dim=4, lengthscale=(2., 2., 2., 2.), ARD=True)]
+    agent_exploit_liks += [GPy.likelihoods.Gaussian(variance=noise ** 2)]
+    agent_exploit_liks[agent].constrain_bounded(1e-6, 1)
 
 # Define coordinates
 n, m = world_shape
@@ -36,7 +39,7 @@ xx, yy = np.meshgrid(np.linspace(0, (n - 1) * step1, n),
 coord = np.vstack((xx.flatten(), yy.flatten())).T
 
 # Safety threhsold
-h = -0.25
+h = -0.5
 
 # Lipschitz
 L = 0
@@ -44,57 +47,225 @@ L = 0
 # Scaling factor for confidence interval
 beta = 2
 
+collide_threshold = 0.95
+
+import copy
 # Data to initialize GP
+agent_gps = []
+altitude_kernel = GPy.kern.RBF(input_dim=2, lengthscale=(2., 2.), variance=1., ARD=True)
+altitude_lik = GPy.likelihoods.Gaussian(variance=noise ** 2)
+altitude_lik.constrain_bounded(1e-6, 10000.)
+altitudes, coord = draw_gp_sample(altitude_kernel, world_shape, step_size)
+
+for agent in range(num_agent):
+    noise = 0.001
+    n_samples = 1
+    ind = np.random.choice(range(altitudes.size), n_samples)
+    X = coord[ind, :]
+    Y = altitudes[ind].reshape(n_samples, 1) + np.random.randn(n_samples, 1)
+    agent_gps += [GPy.core.GP(X, Y, copy.deepcopy(altitude_kernel), copy.deepcopy(altitude_lik))]
+
+import numpy as np
+
 n_samples = 1
-ind = np.random.choice(range(altitudes.size), n_samples)
-X = coord[ind, :]
-Y = altitudes[ind].reshape(n_samples, 1) + np.random.randn(n_samples,
-                                                           1)
-gp = GPy.core.GP(X, Y, kernel, lik)
+agent_explore_gps = []
+agent_exploit_gps = []
+X = []
+Y = []
 
-# Initialize safe sets
-S0 = np.zeros((np.prod(world_shape), 5), dtype=bool)
-S0[:, 0] = True
-S_hat0 = compute_S_hat0(np.nan, world_shape, 4, altitudes,
-                        step_size, h)
+for agent in range(num_agent):
+    for i in range(world_shape[0]):
+        for j in range(world_shape[1]):
+            for i_ in range(world_shape[0]):
+                for j_ in range(world_shape[1]):
+                    X += [[i * step_size[0], j * step_size[1], i_ * step_size[0], j_ * step_size[1]]]
+                    Y += [[np.random.uniform(-1,0,1000)[0]]]
 
-# Define SafeMDP object
-x = GridWorld(gp, world_shape, step_size, beta, altitudes, h, S0, S_hat0,
-              L)
+    X = np.array(X)
+    Y = np.array(Y)
+    mean_func_explore = GPy.core.Mapping(4, 1, name='agent_explore')
+    mean_func_explore.f = lambda x: 0.5
+    mean_func_explore.update_gradients = lambda a,b: 0
+    mean_func_explore.gradients_X = lambda a,b: 0
+    agent_explore_gps += [GPy.core.GP(X, Y, agent_explore_kernels[agent], agent_explore_liks[agent], mean_function=mean_func_explore)]
 
-# Insert samples from (s, a) in S_hat0
-tmp = np.arange(x.coord.shape[0])
-s_vec_ind = np.random.choice(tmp[np.any(x.S_hat[:, 1:], axis=1)])
-tmp = np.arange(1, x.S.shape[1])
-actions = tmp[x.S_hat[s_vec_ind, 1:].squeeze()]
-for i in range(3):
-    x.add_observation(s_vec_ind, np.random.choice(actions))
+    mean_func_exploit = GPy.core.Mapping(4, 1, name='agent_exploit')
+    mean_func_exploit.f = lambda x: 0.5
+    mean_func_exploit.update_gradients = lambda a,b: 0
+    mean_func_exploit.gradients_X = lambda a,b: 0
+    agent_exploit_gps += [GPy.core.GP(X, Y, agent_exploit_kernels[agent], agent_exploit_liks[agent], mean_function=mean_func_exploit)]
 
-# Remove samples used for GP initialization
-x.gp.set_XY(x.gp.X[n_samples:, :], x.gp.Y[n_samples:])
+import copy
+from tqdm import tqdm
+collides = []
+unsafes = []
 
-t = time.time()
-for i in range(100):
-    x.update_sets()
-    next_sample = x.target_sample()
-    x.add_observation(*next_sample)
-    # x.compute_graph_lazy()
-    # plt.figure(1)
-    # plt.clf()
-    # nx.draw_networkx(x.graph)
-    # plt.show()
-    print("Iteration:   " + str(i))
+for epoch in range(10):
+    print(epoch)
+    count_collide = 0
+    count_unsafe = 0
+    agents = []
+    agent_S0s = []
+    agent_S_hat0s = []
+    agent_pos = []
+    while len(agent_pos) != num_agent:
+        agent_pos = []
+        for agent in range(num_agent):
+            S0 = np.zeros((np.prod(world_shape), 5), dtype=bool)
+            S0[:, 0] = True
+            S_hat0 = compute_S_hat0(np.nan, world_shape, 4, altitudes,
+                                    step_size, h)
+            for i in range(len(np.where(S_hat0[:, 1])[0])):
+                if np.where(S_hat0[:, 1])[0][i] not in agent_pos:
+                    agent_pos += [np.where(S_hat0[:, 1])[0][i]]
+                    break
+            agent_S0s += [S0]
+            agent_S_hat0s += [S_hat0]
 
-print(str(time.time() - t) + "seconds elapsed")
+    for agent in range(num_agent):
+        cur_agent_explore_gps = copy.deepcopy(agent_explore_gps)
+        cur_agent_explore_gps.pop(agent)
+        cur_agent_exploit_gps = copy.deepcopy(agent_exploit_gps)
+        cur_agent_exploit_gps.pop(agent)
+        cur_agent_pos = copy.deepcopy(agent_pos)
+        cur_agent_pos.pop(agent)
+        agents += [
+            MultiagentGridWorldAgent(
+                agent_gps[agent],
+                cur_agent_explore_gps,
+                cur_agent_exploit_gps,
+                world_shape,
+                step_size,
+                beta,
+                altitudes,
+                h,
+                collide_threshold,
+                agent_S0s[agent],
+                agent_S_hat0s[agent],
+                agent_pos[agent],
+                L,
+                cur_agent_pos,
+                [0.5 for _ in range(num_agent - 1)],
+            )
+        ]
 
-true_S = compute_true_safe_set(x.world_shape, x.altitudes, x.h)
-true_S_hat = compute_true_S_hat(x.graph, true_S, x.initial_nodes)
+    for i in tqdm(range(10)):
+        agent_actions = [0 for agent in range(num_agent)]
+        agent_next_samples = []
+        agent_states = []
+        for agent in range(num_agent):
+            agents[agent].update_sets()
+            next_sample = agents[agent].target_sample()
+    #         print('agent:' + str(agent))
+    #         print(next_sample)
+            agent_actions[agent] = next_sample[1]
+            agent_next_samples += [next_sample]
+            agent_states += [next_sample[0]]
+            if altitudes[next_sample[0]] < h:
+    #             print('entered an unsafe state')
+                count_unsafe += 1
+    #         print()
 
-# Plot safe sets
-x.plot_S(x.S_hat)
-x.plot_S(true_S_hat)
+    #     print(agent_states)
+        if len(set(agent_states)) < len(agent_states):
+            count_collide += 1
+    #     print()
 
-# Classification performance
-print(np.sum(np.logical_and(true_S_hat, np.logical_not(
-    x.S_hat))))  # in true S_hat and not S_hat
-print(np.sum(np.logical_and(x.S_hat, np.logical_not(true_S_hat))))
+        for agent in range(num_agent):
+            agents[agent].add_observation(agent_next_samples[agent][0], agent_next_samples[agent][1], agent_actions)
+
+    collides += [count_collide]
+    unsafes += [count_unsafe]
+
+print(collides)
+print(unsafes)
+print(np.mean(collides), np.std(collides))
+print(np.mean(unsafes), np.std(unsafes))
+
+import copy
+from tqdm import tqdm
+from singleagent_grid_world import SingleagentGridWorldAgent
+collides = []
+unsafes = []
+
+for epoch in range(10):
+    print(epoch)
+    count_collide = 0
+    count_unsafe = 0
+    agents = []
+    agent_S0s = []
+    agent_S_hat0s = []
+    agent_pos = []
+    while len(agent_pos) != num_agent:
+        agent_pos = []
+        for agent in range(num_agent):
+            S0 = np.zeros((np.prod(world_shape), 5), dtype=bool)
+            S0[:, 0] = True
+            S_hat0 = compute_S_hat0(np.nan, world_shape, 4, altitudes,
+                                    step_size, h)
+            for i in range(len(np.where(S_hat0[:, 1])[0])):
+                if not np.where(S_hat0[:, 1])[0][i] in agent_pos:
+                    agent_pos += [np.where(S_hat0[:, 1])[0][i]]
+                    break
+            agent_S0s += [S0]
+            agent_S_hat0s += [S_hat0]
+
+    for agent in range(num_agent):
+        cur_agent_explore_gps = copy.deepcopy(agent_explore_gps)
+        cur_agent_explore_gps.pop(agent)
+        cur_agent_exploit_gps = copy.deepcopy(agent_exploit_gps)
+        cur_agent_exploit_gps.pop(agent)
+        cur_agent_pos = copy.deepcopy(agent_pos)
+        cur_agent_pos.pop(agent)
+        agents += [
+            SingleagentGridWorldAgent(
+                agent_gps[agent],
+                cur_agent_explore_gps,
+                cur_agent_exploit_gps,
+                world_shape,
+                step_size,
+                beta,
+                altitudes,
+                h,
+                collide_threshold,
+                agent_S0s[agent],
+                agent_S_hat0s[agent],
+                agent_pos[agent],
+                L,
+                cur_agent_pos,
+                [0.5 for _ in range(num_agent - 1)],
+            )
+        ]
+
+    for i in tqdm(range(10)):
+        agent_actions = [0 for agent in range(num_agent)]
+        agent_next_samples = []
+        agent_states = []
+        for agent in range(num_agent):
+            agents[agent].update_sets()
+            next_sample = agents[agent].target_sample()
+    #         print('agent:' + str(agent))
+    #         print(next_sample)
+            agent_actions[agent] = next_sample[1]
+            agent_next_samples += [next_sample]
+            agent_states += [next_sample[0]]
+            if altitudes[next_sample[0]] < h:
+    #             print('entered an unsafe state')
+                count_unsafe += 1
+    #         print()
+
+    #     print(agent_states)
+        if len(set(agent_states)) < len(agent_states):
+            count_collide += 1
+    #     print()
+
+        for agent in range(num_agent):
+            agents[agent].add_observation(agent_next_samples[agent][0], agent_next_samples[agent][1], agent_actions)
+
+    collides += [count_collide]
+    unsafes += [count_unsafe]
+
+print(collides)
+print(unsafes)
+print(np.mean(collides), np.std(collides))
+print(np.mean(unsafes), np.std(unsafes))

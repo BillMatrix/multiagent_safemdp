@@ -65,10 +65,10 @@ class SafeMDP(object):
     def compute_S_hat(self):
         """Compute the safely reachable set given the current safe_set."""
         self.reach[:] = False
-        reachable_set(self.graph, self.initial_nodes, out=self.reach)
+        self.reach = reachable_set(self.graph, self.initial_nodes, out=self.reach)
 
         self.S_hat[:] = False
-        returnable_set(self.graph, self.graph_reverse, self.initial_nodes,
+        self.S_hat = returnable_set(self.graph, self.graph_reverse, self.initial_nodes,
                        out=self.S_hat)
 
         self.S_hat &= self.reach
@@ -125,12 +125,7 @@ def reachable_set(graph, initial_nodes, out=None):
     if not initial_nodes:
         raise AttributeError('Set of initial nodes needs to be non-empty.')
 
-    if out is None:
-        visited = np.zeros((graph.number_of_nodes(),
-                            max_out_degree(graph) + 1),
-                           dtype=np.bool)
-    else:
-        visited = out
+    visited = out
 
     # All nodes in the initial set are visited
     visited[initial_nodes, 0] = True
@@ -149,8 +144,7 @@ def reachable_set(graph, initial_nodes, out=None):
                     stack.append(next_node)
                     visited[next_node, 0] = True
 
-    if out is None:
-        return visited
+    return visited
 
 
 def returnable_set(graph, reverse_graph, initial_nodes, out=None):
@@ -183,12 +177,7 @@ def returnable_set(graph, reverse_graph, initial_nodes, out=None):
     if not initial_nodes:
         raise AttributeError('Set of initial nodes needs to be non-empty.')
 
-    if out is None:
-        visited = np.zeros((graph.number_of_nodes(),
-                            max_out_degree(graph) + 1),
-                           dtype=np.bool)
-    else:
-        visited = out
+    visited = out
 
     # All nodes in the initial set are visited
     visited[initial_nodes, 0] = True
@@ -201,12 +190,10 @@ def returnable_set(graph, reverse_graph, initial_nodes, out=None):
         # iterate over edges going into node
         for _, prev_node in reverse_graph.out_edges(node):
             data = graph.get_edge_data(prev_node, node)
-            print(data)
             if not visited[prev_node, data['action']] and data['safe']:
                 visited[prev_node, data['action']] = True
                 if not visited[prev_node, 0]:
                     stack.append(prev_node)
                     visited[prev_node, 0] = True
 
-    if out is None:
-        return visited
+    return visited

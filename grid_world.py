@@ -125,6 +125,7 @@ def compute_S_hat0(s, world_shape, n_actions, altitudes, step_size, h):
     S_hat: np.array
         Boolean array n_states x (n_actions + 1).
     """
+
     # Initialize
     n, m = world_shape
     n_states = n * m
