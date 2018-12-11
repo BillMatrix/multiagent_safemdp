@@ -9,11 +9,11 @@ import numpy as np
 from multiagent_grid_world import (compute_true_safe_set, compute_S_hat0,
                                 compute_true_S_hat, draw_gp_sample, MultiagentGridWorldAgent)
 import pickle as pkl
+from mars_utilities import mars_map
+
+altitudes, coord, world_shape, step_size, num_of_points = mars_map()
 
 # Define world
-world_shape = (8, 8)
-step_size = (0.5, 0.5)
-
 num_agent = 3
 agent_explore_kernels = []
 agent_explore_liks = []
@@ -28,11 +28,8 @@ agent_rewards_gps = []
 altitude_kernel = GPy.kern.RBF(input_dim=2, lengthscale=(2., 2.), variance=1., ARD=True)
 altitude_lik = GPy.likelihoods.Gaussian(variance=noise ** 2)
 altitude_lik.constrain_bounded(1e-6, 10000.)
-altitudes, coord = draw_gp_sample(altitude_kernel, world_shape, step_size)
 # print(altitudes)
 # pkl.dump(altitudes, open('altitudes.pkl', 'wb'))
-#
-altitudes = pkl.load(open('altitudes.pkl', 'rb'))
 
 for agent in range(num_agent):
     agent_explore_kernels += [GPy.kern.RBF(input_dim=4, lengthscale=(2., 2., 2., 2.), ARD=True)]

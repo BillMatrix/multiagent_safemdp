@@ -10,6 +10,7 @@ from utilities import DifferenceKernel
 from SafeMDP_class import (reachable_set, returnable_set, SafeMDP,
                             link_graph_and_safe_set)
 from math import exp, log
+import math
 
 def compute_true_safe_set(world_shape, altitude, h):
     """
@@ -230,9 +231,9 @@ class MultiagentGridWorldAgent(SafeMDP):
     other_pos:     np.array
                  k - 1 agents' positions in the gridworld
     """
-    def __init__(self, gp, others_explore_gp, others_exploit_gp, world_shape, step_size,
+    def __init__(self, gp, others_explore_gp, others_rewards_gp, world_shape, step_size,
                 beta, altitudes, h, collide_threshold, S0, S_hat0, my_pos_ind, L,
-                other_pos, epsilons, update_dist=0):
+                other_pos, epsilons, update_dist=0, gamma=0.9):
 
         self.S = S0.copy()
         graph = self.grid_world_graph(world_shape)
@@ -244,7 +245,8 @@ class MultiagentGridWorldAgent(SafeMDP):
         self.step_size = step_size
         self.update_dist = update_dist
         self.others_explore_gp = others_explore_gp
-        self.others_exploit_gp = others_exploit_gp
+        self.others_rewards_gp = others_rewards_gp
+        self.gamma = gamma
 
         self.coord = _grid(self.world_shape, self.step_size)
 
@@ -298,6 +300,13 @@ class MultiagentGridWorldAgent(SafeMDP):
                 self.step_size,
             )[0]] for agent in range(self.num_other_agents)
         ]
+
+        self.other_value_functions = [
+            [0.0 for i in range(self.world_shape[0] * self.world_shape[1])]
+            for agent in range(self.num_other_agents)
+        ]
+        for agent in range(self.num_other_agents):
+            self._value_iteration(agent)
 
     def plot_S(self, safe_set, action=0):
         """
@@ -368,21 +377,37 @@ class MultiagentGridWorldAgent(SafeMDP):
                 self.world_shape,
                 self.step_size,
             )[0]
+
             epsilon = self.epsilons[agent]
+
+            best_next_state = agent_coord
+            best_value = -float('inf')
+            for action in range(0, 5):
+                next_state = self.move_coordinate(agent_coord, action)
+                next_node = _states_to_nodes(
+                    np.array([next_state]),
+                    self.world_shape,
+                    self.step_size
+                )[0]
+                if self.other_value_functions[agent][next_node] > best_value:
+                    best_next_state = next_state
+                    best_value = self.other_value_functions[agent][next_node]
+
+            self.update_occupancy(1.0 - epsilon, 0.0, 1.0, best_next_state)
 
             mu_explore_stay, s_explore_stay = self.others_explore_gp[agent].predict(
                 np.array([[agent_coord[0], agent_coord[1], agent_coord[0], agent_coord[1]]]),
                 kern=self.others_explore_gp[agent].kern,
                 full_cov=False
             )
-            mu_exploit_stay, s_exploit_stay = self.others_exploit_gp[agent].predict(
-                np.array([[agent_coord[0], agent_coord[1], agent_coord[0], agent_coord[1]]]),
-                kern=self.others_explore_gp[agent].kern,
-                full_cov=False
-            )
+            # mu_exploit_stay, s_exploit_stay = self.others_exploit_gp[agent].predict(
+            #     np.array([[agent_coord[0], agent_coord[1], agent_coord[0], agent_coord[1]]]),
+            #     kern=self.others_explore_gp[agent].kern,
+            #     full_cov=False
+            # )
 
-            mu_stay = epsilon * mu_explore_stay + (1 - epsilon) * mu_exploit_stay
-            s_stay = epsilon * s_explore_stay + (1 - epsilon) * s_exploit_stay
+            mu_stay = epsilon * mu_explore_stay
+            s_stay = epsilon * s_explore_stay
 
             agent_up_coord = self.move_coordinate(agent_coord, 1)
             mu_explore_up, s_explore_up = self.others_explore_gp[agent].predict(
@@ -390,13 +415,13 @@ class MultiagentGridWorldAgent(SafeMDP):
                 kern=self.others_explore_gp[agent].kern,
                 full_cov=False
             )
-            mu_exploit_up, s_exploit_up = self.others_exploit_gp[agent].predict(
-                np.array([[agent_coord[0], agent_coord[1], agent_up_coord[0], agent_up_coord[1]]]),
-                kern=self.others_explore_gp[agent].kern,
-                full_cov=False
-            )
-            mu_up = epsilon * mu_explore_up + (1 - epsilon) * mu_exploit_up
-            s_up = epsilon * s_explore_up + (1 - epsilon) * s_exploit_up
+            # mu_exploit_up, s_exploit_up = self.others_exploit_gp[agent].predict(
+            #     np.array([[agent_coord[0], agent_coord[1], agent_up_coord[0], agent_up_coord[1]]]),
+            #     kern=self.others_explore_gp[agent].kern,
+            #     full_cov=False
+            # )
+            mu_up = epsilon * mu_explore_up
+            s_up = epsilon * s_explore_up
 
             agent_down_coord = self.move_coordinate(agent_coord, 3)
             mu_explore_down, s_explore_down = self.others_explore_gp[agent].predict(
@@ -404,13 +429,13 @@ class MultiagentGridWorldAgent(SafeMDP):
                 kern=self.others_explore_gp[agent].kern,
                 full_cov=False
             )
-            mu_exploit_down, s_exploit_down = self.others_exploit_gp[agent].predict(
-                np.array([[agent_coord[0], agent_coord[1], agent_down_coord[0], agent_down_coord[1]]]),
-                kern=self.others_explore_gp[agent].kern,
-                full_cov=False
-            )
-            mu_down = epsilon * mu_explore_down + (1 - epsilon) * mu_exploit_down
-            s_down = epsilon * s_explore_down + (1 - epsilon) * s_exploit_down
+            # mu_exploit_down, s_exploit_down = self.others_exploit_gp[agent].predict(
+            #     np.array([[agent_coord[0], agent_coord[1], agent_down_coord[0], agent_down_coord[1]]]),
+            #     kern=self.others_explore_gp[agent].kern,
+            #     full_cov=False
+            # )
+            mu_down = epsilon * mu_explore_down
+            s_down = epsilon * s_explore_down
 
             agent_left_coord = self.move_coordinate(agent_coord, 2)
             mu_explore_left, s_explore_left = self.others_explore_gp[agent].predict(
@@ -418,13 +443,13 @@ class MultiagentGridWorldAgent(SafeMDP):
                 kern=self.others_explore_gp[agent].kern,
                 full_cov=False
             )
-            mu_exploit_left, s_exploit_left = self.others_exploit_gp[agent].predict(
-                np.array([[agent_coord[0], agent_coord[1], agent_left_coord[0], agent_left_coord[1]]]),
-                kern=self.others_explore_gp[agent].kern,
-                full_cov=False
-            )
-            mu_left = epsilon * mu_explore_left + (1 - epsilon) * mu_exploit_left
-            s_left = epsilon * s_explore_left + (1 - epsilon) * s_exploit_left
+            # mu_exploit_left, s_exploit_left = self.others_exploit_gp[agent].predict(
+            #     np.array([[agent_coord[0], agent_coord[1], agent_left_coord[0], agent_left_coord[1]]]),
+            #     kern=self.others_explore_gp[agent].kern,
+            #     full_cov=False
+            # )
+            mu_left = epsilon * mu_explore_left
+            s_left = epsilon * s_explore_left
 
             agent_right_coord = self.move_coordinate(agent_coord, 4)
             mu_explore_right, s_explore_right = self.others_explore_gp[agent].predict(
@@ -432,13 +457,13 @@ class MultiagentGridWorldAgent(SafeMDP):
                 kern=self.others_explore_gp[agent].kern,
                 full_cov=False
             )
-            mu_exploit_right, s_exploit_right = self.others_exploit_gp[agent].predict(
-                np.array([[agent_coord[0], agent_coord[1], agent_right_coord[0], agent_right_coord[1]]]),
-                kern=self.others_explore_gp[agent].kern,
-                full_cov=False
-            )
-            mu_right = epsilon * mu_explore_right + (1 - epsilon) * mu_exploit_right
-            s_right = epsilon * s_explore_right + (1 - epsilon) * s_exploit_right
+            # mu_exploit_right, s_exploit_right = self.others_exploit_gp[agent].predict(
+            #     np.array([[agent_coord[0], agent_coord[1], agent_right_coord[0], agent_right_coord[1]]]),
+            #     kern=self.others_explore_gp[agent].kern,
+            #     full_cov=False
+            # )
+            mu_right = epsilon * mu_explore_right
+            s_right = epsilon * s_explore_right
 
             scale = 1 / (max(exp(mu_stay) + exp(mu_up) + exp(mu_down) + exp(mu_left) + exp(mu_down), 1e-2))
 
@@ -460,7 +485,6 @@ class MultiagentGridWorldAgent(SafeMDP):
             self.step_size
         )[0]
         self.other_agent_occupancy[ind] *= (1 - prob * scale)
-
 
     def grid_world_graph(self, world_size):
         """Create a graph that represents a grid world.
@@ -605,7 +629,7 @@ class MultiagentGridWorldAgent(SafeMDP):
 
         self.compute_S_hat()
 
-    def add_observation(self, node, action, others_actions):
+    def add_observation(self, node, action, others_actions, others_rewards):
         """
         Add an observation of the given state-action pair.
 
@@ -638,17 +662,16 @@ class MultiagentGridWorldAgent(SafeMDP):
                 other_new_coord = other_pos_coord
                 if action != 0:
                     other_new_coord = self.move_coordinate(other_pos_coord, action)
-                self.others_exploit_gp[agent].set_XY(
+                self.others_rewards_gp[agent].set_XY(
                     [
                         [
-                            other_pos_coord[0],
-                            other_pos_coord[1],
                             other_new_coord[0],
                             other_new_coord[1]
                         ]
                     ],
-                    [[float(action == others_actions[agent])]]
+                    [[others_rewards[agent]]]
                 )
+                self._value_iteration(agent)
 
                 self.others_explore_gp[agent].set_XY(
                     [
@@ -685,12 +708,36 @@ class MultiagentGridWorldAgent(SafeMDP):
                     kern=self.others_explore_gp[agent].kern,
                     full_cov=False
                 )
-                exploit_prob, _ = self.others_exploit_gp[agent].predict(
-                    np.array([[traj[step - 1][0], traj[step - 1][1], traj[step][0], traj[step][1]]]),
-                    kern=self.others_exploit_gp[agent].kern,
-                    full_cov=False
-                )
-                sum_log_likelihood += log(epsilon[0] * explore_prob + (1 - epsilon[0]) * exploit_prob)
+
+                scale_denominator = 0.0
+                for action in range(5):
+                    new_coord = self.move_coordinate(traj[step - 1], action)
+                    prob, _ = self.others_explore_gp[agent].predict(
+                        np.array([[traj[step - 1][0], traj[step - 1][1], new_coord[0], new_coord[1]]]),
+                        kern=self.others_explore_gp[agent].kern,
+                        full_cov=False
+                    )
+                    scale_denominator += exp(prob)
+
+                cur_coord = [traj[step - 1][0], traj[step - 1][1]]
+                best_next_state = cur_coord
+                best_value = -float('inf')
+                for action in range(0, 5):
+                    next_state = self.move_coordinate(cur_coord, action)
+                    next_node = _states_to_nodes(
+                        np.array([next_state]),
+                        self.world_shape,
+                        self.step_size
+                    )[0]
+                    if self.other_value_functions[agent][next_node] > best_value:
+                        best_next_state = next_state
+                        best_value = self.other_value_functions[agent][next_node]
+                try:
+                    if epsilon[0] == 0.0:
+                        epsilon[0] = 1e-6
+                    sum_log_likelihood += log(epsilon[0] * exp(explore_prob) / scale_denominator + (1 - epsilon[0]) * float(best_next_state[0] == traj[step][0] and best_next_state[1] == traj[step][1]))
+                except:
+                    print(epsilon[0], explore_prob, scale_denominator, best_next_state, traj[step])
 
             return -sum_log_likelihood
 
@@ -709,6 +756,43 @@ class MultiagentGridWorldAgent(SafeMDP):
             new_coord[1] = 0.0
 
         return new_coord
+
+    def _value_iteration(self, agent):
+        difference = 10000
+
+        while difference > 0.01:
+            cur_difference = 0.0
+            num_nodes = self.world_shape[0] * self.world_shape[1]
+            for node in range(num_nodes):
+                state = _nodes_to_states(
+                    np.array([node]),
+                    self.world_shape,
+                    self.step_size,
+                )[0]
+                cur_reward, _ = self.others_rewards_gp[agent].predict(
+                    np.array([[state[0], state[1]]]),
+                    kern=self.others_rewards_gp[agent].kern,
+                    full_cov=False
+                )
+                old_value = self.other_value_functions[agent][node]
+                for action in range(0, 5):
+                    new_state = self.move_coordinate(state, action)
+                    new_node = _states_to_nodes(
+                        np.array([new_state]),
+                        self.world_shape,
+                        self.step_size
+                    )[0]
+                    self.other_value_functions[agent][node] = max(
+                        cur_reward + self.gamma * self.other_value_functions[agent][new_node],
+                        old_value
+                    )
+
+                cur_difference = max(
+                    cur_difference,
+                    abs(self.other_value_functions[agent][node] - old_value)
+                )
+
+            difference = cur_difference
 
 def _grid(world_shape, step_size):
     """
