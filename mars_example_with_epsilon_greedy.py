@@ -14,6 +14,7 @@ import pickle as pkl
 from mars_utilities import mars_map
 
 altitudes, coord, world_shape, step_size, num_of_points = mars_map()
+print(altitudes)
 
 def _nodes_to_states(nodes, world_shape, step_size):
     """Convert node numbers to physical states.
